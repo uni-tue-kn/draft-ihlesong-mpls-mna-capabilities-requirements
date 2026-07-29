@@ -38,7 +38,7 @@ author:
     email: song.xueyan2@zte.com.cn
  -
     fullname: Greg Mirsky
-    organization: independent
+    organization: Independent
     email: gregimirsky@gmail.com
  -
     fullname: Michael Menth
@@ -82,7 +82,7 @@ The MPLS Network Actions (MNA) framework {{?rfc9789}} provides a general mechani
 Network actions are encoded in Network Action Sub-stacks (NAS) that are placed within the MPLS label stack as In-Stack Data (ISD) or follow after it as Post-Stack Data (PSD).
 The In-Stack MNA header encoding is defined in {{!rfc9994}}, and the Post-Stack MNA solution is defined in {{!I-D.ietf-mpls-mna-ps-hdr}}.
 
-To correctly construct MPLS label stacks that carry network actions, the ingress LER needs to know the MNA capabilities of each node along the path.
+To correctly construct MPLS label stacks that carry network actions, the ingress LER needs to know the MNA capabilities of the nodes along the path that are expected to process these network actions.
 An LSR is not required to process arbitrarily large or arbitrarily deep NAS, and it is not required to support every network action opcode.
 If the ingress LER pushes a NAS that a node on the path cannot process, e.g., because the NAS is beyond the node's readable depth, exceeds the node's maximum supported NAS size, or uses an unsupported opcode, the requested network action is silently not performed or, depending on the implementation, the packet is dropped or punted to the slow path.
 The ingress LER therefore has to know these capabilities before it uses MNA on a path.
@@ -98,7 +98,10 @@ The relevant capabilities include:
    - The maximum Post-Stack MPLS Header (PSMH) size (MLD_PSMH),
    - The maximum number of PSMHs the node can process (MPC), since a packet may carry one PSMH per scope,
    - The RLD including the PSMH (RLD_PSMH),
+   - The maximum start offset at which a node can still locate a PSMH (MPSO),
    - The supported Post-Stack network action opcodes.
+
+Post-Stack MNA does not replace the In-Stack capabilities: the presence of a PSMH is indicated by the P bit in an In-Stack NAS {{!I-D.ietf-mpls-mna-ps-hdr}}, so a packet carrying PSD also carries ISD, and the In-Stack capabilities apply to it as well ({{psd-isd}}).
 
 Section 5.3 of {{!I-D.ietf-mpls-mna-ps-hdr}} explicitly requires that each participating node signals its Post-Stack capabilities to the encapsulating node.
 More generally, none of the In-Stack or Post-Stack capabilities above is known to the ingress LER a priori.
@@ -110,9 +113,10 @@ From these, it derives a set of requirements on such a mechanism ({{requirements
 
 ## Scope and Non-Goals
 This document defines capabilities and requirements only.
-It does not specify how the capabilities are discovered or advertised, and it does not favor a particular solution.
-Candidate solution spaces include the advertisement of capabilities through routing protocols, for example analogous to the advertisement of the Entropy Readable Label Depth (ERLD) in IS-IS {{?rfc9088}} and OSPF {{?rfc9089}} or through BGP-LS {{?I-D.chen-lsr-mpls-mna-capability}}, the definition of a management or telemetry model, and on-path mechanisms that collect or verify capabilities along the forwarding path.
-The trade-offs between these approaches, for example between the flooding overhead of an advertisement approach and the path-fidelity of an on-path approach, are discussed at the level of requirements in {{considerations}} but are not resolved here.
+It does not specify how the capabilities are discovered or advertised, and it neither favors nor excludes a particular solution or class of solutions.
+The requirements in {{requirements}} are therefore stated so that they can be evaluated against any candidate mechanism, whether the mechanism distributes capability information in the control plane, exposes it through a management or telemetry interface, collects or verifies it on the forwarding path, obtains it by configuration, or takes some other approach altogether.
+A solution may also combine several such mechanisms, for example by using one mechanism for coarse feasibility information and another for the detailed capability set.
+The trade-offs between these approaches, for example between the overhead of distributing capability information to nodes that do not need it and the path fidelity that an on-path mechanism can offer, are discussed at the level of requirements in {{considerations}} but are not resolved here.
 
 ## Terminology
 
@@ -120,21 +124,27 @@ The trade-offs between these approaches, for example between the flooding overhe
 
 Although this document does not specify a protocol mechanism, it uses BCP 14 language to state the requirements that constrain a conforming mechanism and the constraints that the ingress LER has to observe when it constructs MPLS label stacks with MNA.
 
+This document uses the term participating node for a node that is expected to process a given NAS, i.e., a node that is MNA-capable, supports the scope of that NAS, and is intended by the operator to act on the network actions it carries.
+The participating nodes are, in general, a subset of the nodes on the path, and the subset differs per NAS.
+Only the capabilities of the participating nodes of a NAS constrain that NAS.
+How the set is determined per scope is described in {{aggregation}}.
+
 ### Abbreviations
 This document makes use of the terms defined in {{!rfc9994}} and in {{?rfc9789}}.
 
-| Abbreviation | Name                     | Description                                                                              | Reference                     |
-| ------------ | ------------------------ | ---------------------------------------------------------------------------------------- | ----------------------------- |
-| NAS          | Network Action Sub-stack | A stack of related LSEs in the MPLS stack containing network actions and ancillary data. | {{?rfc9789}}                  |
-| RLD          | Readable Label Depth     | The number of LSEs a node can parse.                                                     | {{!rfc9994}}                  |
-| MLD_NAS      | NAS Maximum Label Depth  | The maximum number of LSEs in a NAS that a node can process, defined per scope.          | This document                 |
-| MNC          | Maximum NAS Count        | The maximum number of NAS of a given scope that a node can process, defined per scope.   | This document                 |
-| PSMH         | Post-Stack MPLS Header   | The header after the BOS carrying post-stack network actions and ancillary data.         | {{!I-D.ietf-mpls-mna-ps-hdr}} |
-| PSD          | Post-Stack Data          | Network actions and data encoded after the MPLS label stack.                             | {{!I-D.ietf-mpls-mna-ps-hdr}} |
-| ISD          | In-Stack Data            | Network actions and data encoded within the MPLS label stack.                            | {{!rfc9994}}                  |
-| MLD_PSMH     | Maximum PSMH Size        | The maximum size of a single PSMH a node can process, in 4-octet units.                  | This document                 |
-| MPC          | Maximum PSMH Count       | The maximum number of PSMHs (one per scope) that a node can process.                     | This document                 |
-| RLD_PSMH     | RLD including PSMH       | The total parseable depth including label stack and PSMH, in 4-octet units.              | This document                 |
+| Abbreviation | Name                      | Description                                                                                                  | Reference                     |
+| ------------ | ------------------------- | ------------------------------------------------------------------------------------------------------------ | ----------------------------- |
+| NAS          | Network Action Sub-stack  | A stack of related LSEs in the MPLS stack containing network actions and ancillary data.                     | {{?rfc9789}}                  |
+| RLD          | Readable Label Depth      | The number of LSEs a node can parse.                                                                         | {{!rfc9994}}                  |
+| MLD_NAS      | NAS Maximum Label Depth   | The maximum number of LSEs in a NAS that a node can process, defined per scope.                              | This document                 |
+| MNC          | Maximum NAS Count         | The maximum number of NAS of a given scope that a node can process, defined per scope.                       | This document                 |
+| PSMH         | Post-Stack MPLS Header    | The header after the BOS carrying post-stack network actions and ancillary data.                             | {{!I-D.ietf-mpls-mna-ps-hdr}} |
+| PSD          | Post-Stack Data           | Network actions and data encoded after the MPLS label stack.                                                 | {{!I-D.ietf-mpls-mna-ps-hdr}} |
+| ISD          | In-Stack Data             | Network actions and data encoded within the MPLS label stack.                                                | {{!rfc9994}}                  |
+| MLD_PSMH     | Maximum PSMH Size         | The maximum size of a single PSMH a node can process.                                                        | This document                 |
+| MPC          | Maximum PSMH Count        | The maximum number of PSMHs (one per scope) that a node can process.                                         | This document                 |
+| RLD_PSMH     | RLD including PSMH        | The total parseable depth including label stack and PSMHs, but excluding the post-stack offset.              | This document                 |
+| MPSO         | Maximum PSMH Start Offset | The largest start offset from the BoS at which a node can still locate and process a PSMH.                   | This document                 |
 {: #table_abbrev title="Abbreviations."}
 
 
@@ -144,7 +154,7 @@ This section defines the parameters that describe the MNA capabilities of an LSR
 For each parameter, it motivates why the ingress LER needs to know it and states the constraint that the ingress LER has to observe once it knows the value.
 How the ingress LER obtains the value is out of scope for this document.
 
-## In-Stack MNA Capabilities
+## In-Stack MNA Capabilities {#in-stack}
 
 ### The Readable Label Depth (RLD)
 
@@ -197,11 +207,11 @@ The MLD_NAS is defined per scope because the number of nodes that constrain a NA
 Based on the maximum supported NAS sizes, the ingress LER has to observe the following when pushing the MPLS stack and NAS on a packet:
 
 - The ingress LER MUST NOT push a select-scoped NAS that is larger than the MLD_NAS_Select value of the node that will process the select-scoped NAS.
-- The ingress LER MUST NOT push an HBH-scoped NAS that is larger than the minimum of all MLD_NAS_HBH values of all nodes on the path.
+- The ingress LER MUST NOT push an HBH-scoped NAS that is larger than the minimum of the MLD_NAS_HBH values of all participating nodes of that NAS.
 - The ingress LER MUST NOT push an I2E-scoped NAS that is larger than the MLD_NAS_I2E value of the egress node.
 
 These constraints apply to values that the ingress LER has actually learned.
-If the ingress LER does not know a value for a scope at a node, no constraint for that node is derived from it, and the handling described in {{aggregation}} applies.
+If the ingress LER does not know a value for a scope at a participating node, it does not derive a constraint from the values it does know, and the conservative fallback described in {{aggregation}} applies.
 
 The constraints are normative because exceeding a maximum supported value does not degrade performance gracefully.
 An LSR that receives a NAS larger than it can process is unable to complete the network action in the forwarding path.
@@ -231,16 +241,25 @@ The MNC constrains the number of NAS of a scope independently of the MLD_NAS, wh
 Based on the MNC values, the ingress LER has to observe the following when pushing the MPLS stack and NAS on a packet:
 
 - The ingress LER MUST NOT push more select-scoped NAS for a node than that node's MNC_Select.
-- The ingress LER MUST NOT push more HBH-scoped NAS than the minimum of all MNC_HBH values of all nodes on the path.
+- The ingress LER MUST NOT push more HBH-scoped NAS than the minimum of the MNC_HBH values of all participating nodes of these NAS.
 - The ingress LER MUST NOT push more I2E-scoped NAS than the egress node's MNC_I2E.
 
 As for the MLD_NAS, these constraints apply only to values that the ingress LER has actually learned, and exceeding a value does not degrade gracefully: a node that receives more NAS of a scope than it can process is unable to complete the corresponding network actions in the forwarding path, with the same consequences as described for the MLD_NAS.
 
-### Supported In-Stack Network Action Opcodes
+### Supported In-Stack Network Action Opcodes {#in-stack-opcodes}
 An LSR does not necessarily support every In-Stack network action opcode.
-The ingress LER MUST NOT push an In-Stack network action for a node that the node does not support, because the node would then silently not perform the action.
-The ingress LER therefore needs to know the set of In-Stack network action opcodes that each relevant node supports.
-If the support for an opcode at a node is not known, it has to be assumed that the opcode is not supported by that node.
+Unlike the size and depth parameters above, an unsupported opcode has a defined outcome in the data plane: Section 5.4 of {{!rfc9994}} specifies that a node that does not understand an opcode within a NAS acts according to the Unknown Network Action Handling (U) bit of that NAS, i.e., it skips to the next network action when U is 0 and drops the packet when U is 1.
+The U bit exists so that this case is handled deterministically rather than being left to the implementation, and an ingress LER that is aware of it can use it deliberately, e.g., to fail closed for a network action whose omission would be unsafe.
+
+However, neither outcome achieves what the ingress LER intends when it pushes a network action.
+With U set to 0, the network action is not performed and the packet is forwarded as if it had never been requested, which the ingress LER cannot detect.
+With U set to 1, the packet is dropped, so that the traffic is lost rather than merely unprocessed.
+Unknown Network Action Handling therefore makes the failure mode predictable, but it does not remove the need to know which opcodes a node supports.
+This is consistent with Section 2.2 of {{?rfc9789}}, which recommends that care be taken not to construct an LSP that traverses nodes that do not support a network action that has to be processed at every hop.
+
+The ingress LER thus needs to know the set of In-Stack network action opcodes that each participating node supports.
+Knowing them, the ingress LER SHOULD refrain from pushing an In-Stack network action for a node that does not support the corresponding opcode, and instead use a network action that is supported on the path, select a different path, or refrain from using MNA on that path.
+If the support for an opcode at a participating node is not known, the ingress LER treats the opcode as not supported by that node, as described in {{aggregation}}.
 
 ## Post-Stack MNA Capabilities
 The Post-Stack MNA solution {{!I-D.ietf-mpls-mna-ps-hdr}} allows network actions and their ancillary data to be encoded after the bottom of the MPLS label stack in a Post-Stack MPLS Header (PSMH).
@@ -249,14 +268,30 @@ Section 5.3 of {{!I-D.ietf-mpls-mna-ps-hdr}} requires that each participating no
 This section defines the parameters for that purpose.
 
 {{fig-psmh_sizes_example}} gives an overview of the post-stack sizes defined in this section.
-It shows how the MLD_PSMH and the RLD_PSMH relate to the MPLS label stack, the post-stack offset, and a Post-Stack MPLS Header.
-The MLD_PSMH bounds the size of each PSMH itself, excluding the PSMH type header, whereas the RLD_PSMH bounds the total depth from the top of the label stack up to and including the last PSMH.
-When several PSMHs are present, the figure repeats accordingly, with one Post-Stack MPLS Base Header per scope, all covered by the RLD_PSMH.
+It shows how the MLD_PSMH, the RLD_PSMH, and the MPSO relate to the MPLS label stack, the In-Stack NAS that carries the P bit, the post-stack offset, and a Post-Stack MPLS Header.
+The MLD_PSMH bounds the size of each PSMH itself, excluding its Post-Stack MPLS Base Header.
+The RLD_PSMH bounds what a node reads, i.e., the MPLS label stack and the PSMHs; the post-stack offset in between is skipped rather than read and is bounded by the MPSO instead, which is why the RLD_PSMH bracket in the figure is interrupted there.
+When several PSMHs are present, the figure repeats accordingly, with one In-Stack NAS and one Post-Stack MPLS Base Header per scope, all covered by the RLD_PSMH.
 
 ~~~~
 {::include ./drawings/psmh_sizes_example.txt}
 ~~~~
-{: #fig-psmh_sizes_example title="Overview of the post-stack sizes MLD_PSMH and RLD_PSMH."}
+{: #fig-psmh_sizes_example title="Overview of the post-stack parameters MLD_PSMH, RLD_PSMH, and MPSO. The RLD_PSMH does not cover the post-stack offset, which is bounded by the MPSO."}
+
+### In-Stack Data Required for Post-Stack MNA {#psd-isd}
+Post-Stack MNA is not a self-contained alternative to In-Stack MNA.
+The presence of a PSMH is indicated by the P bit, which {{!I-D.ietf-mpls-mna-ps-hdr}} defines as bit 20 of the Format B LSE of the corresponding In-Stack NAS, and which MUST be set to 1 when the corresponding PSMH is added to the packet.
+The scope (IHS) and the Unknown Network Action Handling (U) that apply to the Post-Stack network actions are those of that NAS as well.
+A node that does not support the P bit skips the processing of the PSMH altogether {{!I-D.ietf-mpls-mna-ps-hdr}}.
+
+A packet that carries Post-Stack network actions therefore always carries an In-Stack NAS for each scope for which a PSMH is present, even when no In-Stack network action is needed.
+Such a NAS is at least 2 LSEs large, consisting of a Format A LSE and a Format B LSE that carries the No-Operation opcode {{!rfc9994}} with the P bit set.
+It grows when further In-Stack opcodes are needed: if the PSMH does not start immediately after the BoS, the PSMH Start Offset opcode is carried in the NAS, and the PSMH End Offset opcode may be carried so that a node can determine the size of the PSMH without parsing it {{!I-D.ietf-mpls-mna-ps-hdr}}.
+Since only the first opcode of a NAS is encoded in the Format B LSE, each further opcode adds at least one Format C LSE to the NAS.
+
+Consequently, the In-Stack capabilities of {{in-stack}} also constrain a deployment that uses Post-Stack network actions exclusively.
+For each scope for which a PSMH is present, the participating nodes have to support that scope, their MLD_NAS has to accommodate the accompanying NAS, their MNC has to admit it, and the NAS has to be placed within their RLD.
+An implementation that supports Post-Stack MNA but has an MLD_NAS below 2 LSEs for a scope, or an MNC of 0 for that scope, cannot process Post-Stack network actions of that scope.
 
 ### Post-Stack MNA Support
 A node MAY support Post-Stack MNA processing.
@@ -264,14 +299,14 @@ Per {{!I-D.ietf-mpls-mna-ps-hdr}}, the encapsulating node does not add a Post-St
 Therefore, the ingress LER needs to know whether each node on the path that would process a PSMH supports Post-Stack MNA.
 
 ### Maximum Post-Stack MPLS Header Size (MLD_PSMH)
-The PSMH-LEN field in the Post-Stack MPLS Header indicates the total length of the Post-Stack MPLS Header in 4-octet units, excluding the 4-byte PSMH type header {{!I-D.ietf-mpls-mna-ps-hdr}}.
+The PSMH-Len field in the Post-Stack MPLS Base Header indicates the length of the Post-Stack MPLS Header, excluding the 4-octet Post-Stack MPLS Base Header itself {{!I-D.ietf-mpls-mna-ps-hdr}}.
 Hardware implementations may have limits on the maximum PSMH size they can process.
 The maximum supported PSMH length is referred to as MLD_PSMH in this document, analogous to MLD_NAS for ISD.
-It is expressed in 4-octet units, consistent with the PSMH-LEN field encoding.
+It is expressed in the same units as the PSMH-Len field and therefore likewise excludes the Post-Stack MPLS Base Header.
 The MLD_PSMH applies to each PSMH individually, not to their combined size; the combined post-stack depth is bounded by the RLD_PSMH instead.
 Based on the MLD_PSMH values, the ingress LER has to observe the following:
 
-- The ingress LER MUST NOT add a PSMH with a PSMH-LEN exceeding the MLD_PSMH of any node that will process that PSMH.
+- The ingress LER MUST NOT add a PSMH with a PSMH-Len exceeding the MLD_PSMH of any node that will process that PSMH.
 
 ### Maximum Number of PSMHs (MPC)
 As described above, a packet may carry more than one PSMH, one per scope.
@@ -287,37 +322,94 @@ Based on the MPC values, the ingress LER has to observe the following:
 As for the other post-stack parameters, exceeding a node's MPC does not degrade gracefully: a node that receives more PSMHs than it can process is unable to complete the corresponding post-stack network actions in the forwarding path.
 
 ### Readable Label Depth Including Post-Stack MPLS Header (RLD_PSMH)
-Section 5.3 of {{!I-D.ietf-mpls-mna-ps-hdr}} defines the "Readable Label Depth including Post-Stack MPLS Header" as the total depth a node can parse, including both the MPLS label stack and the PSMH.
-This parameter is referred to as RLD_PSMH in this document and is expressed in 4-octet units.
-Since an MPLS LSE is 4 octets, this is the same unit in which the RLD is expressed.
-The RLD_PSMH is not simply the sum of the RLD and the PSMH size.
-Depending on the encapsulation, there can be an offset between the bottom of the MPLS label stack and the beginning of the post-stack data, for example a control word or other fields that precede the PSMH.
-The RLD_PSMH expresses the total depth that the node parses to reach and read the PSMHs, and it MAY therefore include this offset in addition to the label stack and the PSMHs themselves, as illustrated in {{fig-psmh_sizes_example}}.
-Based on the RLD_PSMH values, the ingress LER MUST ensure that the combined depth of the MPLS label stack, any post-stack offset, and all PSMHs intended for a node does not exceed that node's RLD_PSMH.
+Section 5.3 of {{!I-D.ietf-mpls-mna-ps-hdr}} requires each participating transit and decapsulating node to signal its "Readable Label Depth including PSMH", i.e., the RLD of {{!rfc9994}} extended to include the length of the PSMH.
+This parameter is referred to as RLD_PSMH in this document.
+
+The RLD_PSMH covers the parts of the packet that the node has to read, i.e., the MPLS label stack and the PSMHs, as illustrated in {{fig-psmh_sizes_example}}.
+It does not cover the post-stack offset, i.e., the octets between the BoS and the beginning of the first PSMH that are occupied by other post-stack headers, for example a pseudowire control word or a Generic Associated Channel Header {{!I-D.ietf-mpls-mna-ps-hdr}}.
+Those octets are not parsed as part of the PSMH processing but skipped, and their number is not inferred by the node but signaled explicitly in the packet by the PSMH Start Offset opcode in the corresponding In-Stack NAS.
+How far a node can skip is a capability of its own and is expressed by the MPSO ({{mpso}}) rather than by the RLD_PSMH.
+Keeping the two apart means that neither value has to be recomputed when the other changes, e.g., when a deployment starts or stops using a control word before the PSMH.
+
+Based on the RLD_PSMH values, the ingress LER MUST ensure that the combined depth of the MPLS label stack and of all PSMHs intended for a node does not exceed that node's RLD_PSMH.
+
+The RLD_PSMH is a capability of its own and is not derivable from the RLD: a node that can read a given number of LSEs of the label stack cannot necessarily read the same number of LSEs and a PSMH in addition.
+Where an implementation has a single parsing budget from which the label stack, the skipped offset, and the PSMHs are all served, it accounts for the offset it can skip when it determines the values that it reports, so that its RLD_PSMH and its MPSO can be observed simultaneously.
+
+### Maximum PSMH Start Offset (MPSO) {#mpso}
+The RLD_PSMH bounds what a node reads, but it does not express where after the BoS a node can locate a PSMH.
+A node may be able to process a PSMH that starts immediately after the BoS but not one that starts at an arbitrary offset, for example because its parser recognizes only a fixed set of intervening post-stack headers or because it can skip only a fixed number of octets after the BoS.
+The largest start offset from the BoS at which a node can still locate and process a PSMH is referred to as Maximum PSMH Start Offset (MPSO) in this document.
+An MPSO of 0 means that the node can process a PSMH only when it starts immediately after the BoS, which is the default placement per {{!I-D.ietf-mpls-mna-ps-hdr}}.
+
+Whether a node understands the PSMH Start Offset opcode at all is expressed by its set of supported In-Stack opcodes ({{in-stack-opcodes}}).
+The MPSO expresses how large a value of that opcode the node can act upon.
+Since the offset is signaled explicitly in the packet, the ingress LER can check it against the MPSO independently of the depth check against the RLD_PSMH.
+This lets the ingress LER distinguish a node that cannot read deeply enough from a node that can read the required depth but cannot skip the intervening post-stack headers.
+
+Based on the MPSO values, the ingress LER has to observe the following:
+
+- The ingress LER MUST NOT encode a PSMH at a start offset larger than the MPSO of any node that will process that PSMH.
 
 ### Supported Post-Stack Network Action Opcodes
-The Post-Stack network action opcode space (MNA-PS-OP) is 7 bits, supporting 128 opcodes {{!I-D.ietf-mpls-mna-ps-hdr}}.
-The ingress LER needs to know the set of Post-Stack network action opcodes that each relevant node supports.
-The Post-Stack opcode space is separate from the In-Stack opcode space; a node may support an opcode in-stack, post-stack, or both.
-Support for an opcode in one space therefore MUST NOT be assumed to imply support in the other.
+The Post-Stack network action opcode space (MNA-PS-OP) is 7 bits wide, so up to 128 Post-Stack opcodes can be defined {{!I-D.ietf-mpls-mna-ps-hdr}}, and an LSR does not necessarily support all of those that are defined.
+As for In-Stack opcodes ({{in-stack-opcodes}}), an unsupported Post-Stack opcode has a defined outcome: a transit node MUST respect the Unknown Network Action Handling flag encoded in the corresponding NAS when it processes the PSMH {{!I-D.ietf-mpls-mna-ps-hdr}}, i.e., it skips the unknown Post-Stack network action or drops the packet.
+The U bit of a NAS applies jointly to the In-Stack and the Post-Stack network actions of that scope, so the ingress LER cannot choose a different failure mode for the two.
+The considerations of {{in-stack-opcodes}} apply accordingly: the handling is predictable, but neither skipping nor dropping performs the requested network action.
+
+The ingress LER therefore needs to know the set of Post-Stack network action opcodes that each participating node supports, and it SHOULD refrain from adding a Post-Stack network action for a node that does not support the corresponding opcode.
+If the support for a Post-Stack opcode at a participating node is not known, the ingress LER treats the opcode as not supported by that node, as described in {{aggregation}}.
+
+The Post-Stack opcode space is separate from the In-Stack opcode space; a node may support a network action In-Stack, Post-Stack, or both.
+Support for a network action in one space therefore MUST NOT be assumed to imply support in the other.
 
 # Deriving Path-Wide Constraints {#aggregation}
 The capabilities in {{capabilities}} are per-node properties, but the ingress LER constructs a single label stack for a path.
-It therefore has to combine the per-node capabilities of the relevant nodes into path-wide constraints.
-Independently of how the ingress LER learns the per-node capabilities, the combination follows from the scope of each parameter:
+It therefore has to combine the per-node capabilities into path-wide constraints.
 
-- The path-wide RLD is the minimum RLD of all nodes on the path.
-- The path-wide MLD_NAS_HBH is the minimum MLD_NAS_HBH of all nodes on the path.
+## Participating Nodes {#participating}
+The capabilities that constrain a NAS are those of the participating nodes of that NAS, not those of all nodes on the path.
+Which nodes participate follows from the scope of the NAS and from the deployment:
+
+- A select-scoped NAS is processed by the node that brings it to the top of the label stack {{!rfc9994}}, so exactly that node participates.
+- An I2E-scoped NAS MUST NOT be processed by any node except the egress node {{!rfc9994}}, so only the egress node participates.
+- An HBH-scoped NAS is processed by the MNA-capable nodes on the path that are expected to act on the network actions it carries. An operator may decide that a node does not participate in a particular network action, for example a node with a low RLD, and a node that is not MNA-capable at all cannot participate in any case.
+
+A node that does not participate contributes no capability values to the constraints of that NAS, but it may still constrain the label stack in other ways.
+Per Section 7 of {{!rfc9994}}, a NAS MUST NOT appear at the top of the label stack at an MNA-incapable node, which restricts where a NAS may be placed independently of any capability value.
+Per Section 2.2 of {{?rfc9789}}, care should be taken not to construct an LSP that traverses nodes that do not support a network action that has to be processed at every hop, which the ingress LER can only do if it knows which nodes these are.
+Consequently, the ingress LER needs to know which nodes on a path are MNA-capable and which of them participate in a given network action, in addition to the capability values of the participating nodes.
+
+## Combination of the Capabilities {#combination}
+Independently of how the ingress LER learns the per-node capabilities, their combination follows from the scope of each parameter.
+In the following, the participating nodes are those of the NAS in question, as defined in {{participating}}:
+
+- The path-wide RLD for a NAS is the minimum RLD of its participating nodes.
+- The path-wide MLD_NAS_HBH is the minimum MLD_NAS_HBH of the participating nodes of the HBH-scoped NAS.
 - The MLD_NAS_Select for a specific node is the value of that node.
 - The MLD_NAS_I2E is the value of the egress node.
-- The MNC values are combined per scope in the same way as the MLD_NAS values: the path-wide MNC_HBH is the minimum over all nodes on the path, the MNC_Select for a specific node is the value of that node, and the MNC_I2E is the value of the egress node.
-- A scope is available on the path only if every node that would process a NAS of that scope supports it. In particular, an HBH-scoped NAS cannot be used if any node on the path does not support the HBH scope.
-- The path-wide supported opcodes for an HBH-scoped NAS are the intersection of the opcodes supported by all nodes on the path. The supported opcodes for a select-scoped NAS are those of the node processing that NAS, and for an I2E-scoped NAS those of the egress node.
-- Post-Stack capabilities are combined analogously, but taking into account that different nodes process different PSMHs: Post-Stack MNA is available only if the decapsulating node supports it; the size of each PSMH (MLD_PSMH), the number of PSMHs at a node (MPC), and the combined post-stack depth at a node (RLD_PSMH) are each constrained by the nodes that process the respective PSMH(s), as defined in {{capabilities}}; and the supported Post-Stack opcodes are combined per scope like the In-Stack opcodes.
+- The MNC values are combined per scope in the same way as the MLD_NAS values: the path-wide MNC_HBH is the minimum over the participating nodes, the MNC_Select for a specific node is the value of that node, and the MNC_I2E is the value of the egress node.
+- A scope is available on the path only if every node that would process a NAS of that scope supports it. In particular, an HBH-scoped NAS cannot be used if a node that is expected to process it does not support the HBH scope.
+- The path-wide supported opcodes for an HBH-scoped NAS are the intersection of the opcodes supported by its participating nodes. The supported opcodes for a select-scoped NAS are those of the node processing that NAS, and for an I2E-scoped NAS those of the egress node.
+- Post-Stack capabilities are combined analogously, but taking into account that different nodes process different PSMHs: Post-Stack MNA is available only if the decapsulating node supports it; the size of each PSMH (MLD_PSMH), the number of PSMHs at a node (MPC), the start offset of each PSMH (MPSO), and the combined depth of the label stack and the PSMHs at a node (RLD_PSMH) are each constrained by the nodes that process the respective PSMH(s), as defined in {{capabilities}}; and the supported Post-Stack opcodes are combined per scope like the In-Stack opcodes.
+- Since a PSMH is accompanied by an In-Stack NAS with the P bit set ({{psd-isd}}), the In-Stack constraints of the corresponding scope apply to that NAS in addition.
 
-For these combinations to be correct, the ingress LER has to know the capabilities of exactly the set of nodes that process a NAS of a given scope.
-For HBH-scoped NAS and for the path-wide RLD, this is every node on the forwarding path, so missing information about a single node invalidates the path-wide constraint.
-A mechanism that provides the per-node capabilities therefore has to make it possible for the ingress LER to determine whether it has the capabilities of all relevant nodes, and to identify nodes for which a value is unknown, so that the ingress LER can fall back to conservative behavior for those nodes.
+The RLD is combined into a single path-wide minimum only if a single copy of the NAS is used.
+If several copies of an HBH-scoped NAS are placed in a deep label stack, as described in Section 7 of {{!rfc9994}}, the RLD constraint applies to each copy and to the participating nodes that read that copy, rather than to a single path-wide minimum.
+
+## Unknown Capabilities {#unknown}
+For the combinations above to be correct, the ingress LER has to know the capabilities of exactly the participating nodes of each NAS.
+For an HBH-scoped NAS, and for the RLD that applies to it, these are all nodes that are expected to process it, so missing information about a single participating node invalidates the path-wide constraint.
+A mechanism that provides the per-node capabilities therefore has to make it possible for the ingress LER to determine whether it has the capabilities of all participating nodes, and to identify the nodes for which a value is unknown.
+
+If a capability of a participating node is unknown, the ingress LER MUST NOT derive a bound from the values that it does know, since the unknown value can be more restrictive than any of them.
+Instead, it falls back conservatively, which in this document means that it does one of the following:
+
+- It refrains from using the network action, the scope, or the encoding that depends on the unknown value on that path, up to refraining from using MNA on that path altogether.
+- It restricts itself to values that are known to be supported by every node in the domain by other means, e.g., a domain-wide minimum established by configuration or by the hardware baseline of the deployment.
+- It selects a different path or egress node whose capabilities it does know, if it is able to steer the traffic as described in {{path-selection}}.
+
+In particular, an opcode or a scope whose support at a participating node is unknown is treated as not supported by that node, and a size or depth parameter that is unknown at a participating node yields no bound at all rather than a bound derived from the other nodes.
 
 # Considerations for Capability Discovery {#considerations}
 This section describes problems that any mechanism for discovering or advertising MNA capabilities has to address.
@@ -340,12 +432,16 @@ In particular, when multiple candidate egress nodes exist, the ingress LER can s
 When the LSP traverses one or more Equal-Cost Multipath (ECMP) sets, the nodes that a particular data packet of a flow visits are not necessarily the same across the ECMP set.
 Capabilities that hold for one traversal of the path are therefore not sufficient to constrain the NAS that the ingress LER pushes onto the LSP, because a different member of the ECMP set may have more restrictive capabilities.
 
-To construct a NAS that is processable by any packet of the flow, the ingress LER has to apply the path-wide constraints of {{aggregation}}, with the set of relevant nodes extended to every node on every branch of each ECMP set.
+To construct a NAS that is processable by any packet of the flow, the ingress LER has to apply the path-wide constraints of {{aggregation}}, with the set of participating nodes extended to the participating nodes on every branch of each ECMP set.
 The minima and the scope and opcode intersections defined there are then taken across all branches rather than over a single traversal, while the select-scoped and I2E-scoped constraints remain those of the node that processes the corresponding NAS.
 
 This requires that the mechanism makes the capabilities of all members of an ECMP set available to the ingress LER, or otherwise allows the ingress LER to determine that it has covered every branch.
-If the ingress LER cannot establish that it has the capabilities of every branch of an ECMP set, it MUST treat the capabilities of that ECMP set as unknown and MUST NOT rely on values beyond it.
-In that case, the ingress LER can fall back to the constraints that hold without this information, i.e., refrain from using MNA on that LSP, or restrict itself to NAS sizes and opcodes that are known to be supported by all nodes in the domain by other means.
+If the ingress LER cannot establish that it has the capabilities of every branch of an ECMP set, it MUST treat the capabilities of the nodes on the branches that it has not covered as unknown, in the sense of {{unknown}}.
+This means in particular that the ingress LER derives no bound from the branches that it does know, because a branch that it does not know may be more restrictive: a minimum taken over the known branches is not a valid path-wide constraint, and an opcode or a scope supported on the known branches is not thereby supported on the LSP.
+The ingress LER then falls back conservatively as described in {{unknown}}, i.e., it refrains from using MNA on that LSP or restricts itself to the network actions, scopes, and NAS sizes that are supported throughout the domain by other means.
+
+Capabilities of nodes that are on every branch of the ECMP set remain usable.
+For example, the egress node terminates all branches of an ECMP set within the LSP, so its capabilities constrain an I2E-scoped NAS as they do without ECMP, provided that the placement restrictions of Section 7 of {{!rfc9994}} are met on every branch, e.g., that no MNA-incapable node exposes the NAS at the top of the label stack when it pops the forwarding label.
 
 Load balancing based on an entropy label {{?rfc6790}} or on fields of the payload means that the member of an ECMP set taken by a given flow cannot, in general, be predicted or reproduced from outside the flow.
 This does not change the requirement: the ingress LER does not need to establish the capabilities of the branch taken by an individual flow, but the capabilities that hold for every branch a flow may take.
@@ -362,7 +458,8 @@ The ingress LER SHOULD re-establish the capabilities of a path when it has reaso
 Not every node on a path necessarily supports MNA at all.
 A node that does not support MNA cannot process any NAS, so its presence on the path constrains which network actions can be used, in the same way as a node with limited capabilities.
 A mechanism therefore has to allow the ingress LER to distinguish, for each node on the path, between a node that supports MNA and reports its capabilities, a node that supports MNA but for which a particular value is unknown, and a node that does not support MNA at all.
-A node that does not support MNA MUST be treated as not supporting any scope, opcode, or Post-Stack processing.
+A node that does not support MNA MUST be treated as not supporting any scope, opcode, or Post-Stack processing, and it therefore never participates in a NAS in the sense of {{participating}}.
+Not participating does not mean that such a node can be disregarded: it still restricts where a NAS may be placed in the label stack, as described in {{participating}}.
 
 ## Per-Interface and Per-Node Capabilities {#per-interface}
 The capabilities in {{capabilities}} are described as properties of a node, but in some implementations they can differ per interface.
@@ -374,11 +471,11 @@ This section summarizes the requirements on a mechanism for making MNA capabilit
 The requirements follow from the capabilities in {{capabilities}} and the considerations in {{considerations}}.
 
 - REQ-1: The mechanism MUST allow the ingress LER to learn the RLD of each node on a path.
-- REQ-2: The mechanism MUST allow the ingress LER to learn, per scope (select, HBH, I2E), both the maximum NAS size (MLD_NAS) and the maximum number of NAS (MNC) that each relevant node can process, and to learn which scopes a node supports.
-- REQ-3: The mechanism MUST allow the ingress LER to learn the set of supported In-Stack network action opcodes of each relevant node.
-- REQ-4: The mechanism MUST allow the ingress LER to learn, for each relevant node, whether it supports Post-Stack MNA and, if so, its MLD_PSMH, the maximum number of PSMHs it can process (MPC), its RLD_PSMH, and its supported Post-Stack network action opcodes.
+- REQ-2: The mechanism MUST allow the ingress LER to learn, per scope (select, HBH, I2E), both the maximum NAS size (MLD_NAS) and the maximum number of NAS (MNC) that each participating node can process, and to learn which scopes a node supports.
+- REQ-3: The mechanism MUST allow the ingress LER to learn the set of supported In-Stack network action opcodes of each participating node.
+- REQ-4: The mechanism MUST allow the ingress LER to learn, for each participating node, whether it supports Post-Stack MNA and, if so, its MLD_PSMH, the maximum number of PSMHs it can process (MPC), its RLD_PSMH, its MPSO, and its supported Post-Stack network action opcodes.
 - REQ-5: The mechanism MUST allow the ingress LER to associate the learned capabilities with the forwarding path and to determine whether it has the capabilities of all nodes a flow may traverse, including across ECMP sets. Full coverage of every ECMP branch is desirable but not required; where it is not achieved, the ingress LER falls back conservatively ({{ecmp}}).
-- REQ-6: The mechanism MUST allow the ingress LER to distinguish a node that does not support MNA, a node that supports MNA but for which a value is unknown, and a node that reports a value ({{incapable}}).
+- REQ-6: The mechanism MUST allow the ingress LER to distinguish a node that does not support MNA, a node that supports MNA but for which a value is unknown, and a node that reports a value ({{incapable}}), so that the ingress LER can determine the participating nodes of a NAS ({{participating}}) and apply the conservative fallback where a value is unknown ({{unknown}}).
 - REQ-7: The mechanism SHOULD allow the ingress LER to become aware of changes of the capabilities of a path in a timely manner, or to re-establish them when the path may have changed ({{change}}).
 - REQ-8: The mechanism SHOULD scale with the number of paths on which MNA is used, rather than with the size of the domain, so that capability information is not imposed on nodes that do not need it ({{path-selection}}).
 - REQ-9: Where capabilities can vary per interface, the mechanism SHOULD allow the ingress LER to obtain the capabilities relevant to the forwarding path through a node ({{per-interface}}).
@@ -396,8 +493,10 @@ Suppose that, by some mechanism, R0 has learned the following capabilities of th
 | R3   | 35  | 9              | 9           | 9              | Yes          | 16       | 51       |
 {: #table_example title="Example MNA capabilities of the nodes on a path."}
 
+All three nodes are MNA-capable and participate in the network actions that R0 intends to use, so the participating nodes of the HBH-scoped NAS are R1, R2, and R3.
 For simplicity, each node in this example can process a single NAS per scope, i.e., MNC_Select = MNC_HBH = MNC_I2E = 1, consistent with the single HBH-scoped and single select-scoped NAS that R0 intends to push.
 Likewise, each node can process the PSMHs it sees: the transit nodes at least the HBH-scoped PSMH and the egress node both the HBH-scoped and the I2E-scoped PSMH, i.e., MPC is 1 at R1 and R2 and 2 at R3.
+R1 and R3 can process a PSMH that starts up to 4 octets after the BoS, i.e., MPSO = 1, whereas R2 can process a PSMH only when it starts immediately after the BoS, i.e., MPSO = 0.
 
 Applying the derivation of path-wide constraints from {{aggregation}}, R0 determines:
 
@@ -409,9 +508,13 @@ Applying the derivation of path-wide constraints from {{aggregation}}, R0 determ
 - Path-wide MLD_PSMH for an HBH-scoped PSMH: min(16, 8, 16) = 8 (in 4-octet units).
 - MLD_PSMH for an I2E-scoped PSMH: 16 (from R3).
 - Path-wide RLD_PSMH: min(36, 59, 51) = 36 (in 4-octet units).
+- Path-wide MPSO for an HBH-scoped PSMH: min(1, 0, 1) = 0, so the PSMHs have to start immediately after the BoS and no other post-stack header can precede them.
 
 R0 can now construct a label stack ensuring that all NAS are within each node's RLD and do not exceed the per-scope MLD_NAS and MNC constraints.
-For Post-Stack MNA, R0 ensures that each PSMH does not exceed the MLD_PSMH of the nodes that process it, that no node receives more PSMHs than its MPC, and that the combined depth of the label stack, any offset, and the PSMHs does not exceed any node's RLD_PSMH.
+The two PSMHs require an In-Stack NAS with the P bit set for each of their scopes ({{psd-isd}}).
+For the HBH-scoped PSMH, this is the HBH-scoped NAS that R0 pushes anyway, which leaves the path-wide MLD_NAS_HBH of 3 LSEs for the In-Stack network actions of that scope.
+For the I2E-scoped PSMH, R0 has to add an I2E-scoped NAS even though it does not use In-Stack network actions of that scope; a NAS of 2 LSEs carrying the No-Operation opcode with the P bit set suffices and is well within the MLD_NAS_I2E of 9 LSEs at R3.
+For Post-Stack MNA, R0 ensures that each PSMH does not exceed the MLD_PSMH of the nodes that process it, that no node receives more PSMHs than its MPC, that no PSMH starts at an offset beyond the MPSO of a node that processes it, and that the combined depth of the label stack and of the PSMHs does not exceed any node's RLD_PSMH.
 
 # Security Considerations
 The MNA capabilities defined in this document reveal information about node capabilities, which could potentially be exploited by an attacker to craft targeted attacks against nodes with limited MNA support.
@@ -425,8 +528,3 @@ The security considerations of {{!rfc9994}} and {{?rfc9789}} also apply.
 This document has no IANA actions.
 
 --- back
-
-# Acknowledgments
-{:numbered="false"}
-
-TODO acknowledge.
