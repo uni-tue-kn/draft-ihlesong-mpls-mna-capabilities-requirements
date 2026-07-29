@@ -2,7 +2,7 @@
 *.pdf
 *.redxml
 *.swp
-*.txt
+draft-ihlesong-mpls-mna-capabilities-requirements.txt
 *.upload
 *~
 .tags
