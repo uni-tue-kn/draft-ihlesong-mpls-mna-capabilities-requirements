@@ -1,6 +1,6 @@
 <!-- regenerate: on (set to off if you edit this file) -->
 
-# Requirements for the discovery of MNA Capabilities
+# Requirements for the Discovery of MNA Capabilities
 
 This is the working area for the individual Internet-Draft, "Requirements for the discovery of MNA Capabilities".
 
